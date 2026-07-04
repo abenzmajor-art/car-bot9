@@ -1,21 +1,22 @@
 import asyncio
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.utils import executor
 
 BOT_TOKEN = "8915745168:AAEeM2e1SFvUC5ufxZrNVch3iBsWd6UybPw"
-MANAGER_ID = 8915745168:803329304
+MANAGER_ID = 803329304
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(bot, storage=MemoryStorage())
 
-main_kb = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="🚗 Каталог", callback_data="catalog:0")],
-    [InlineKeyboardButton(text="🧮 Калькулятор", callback_data="calc_start")],
-    [InlineKeyboardButton(text="📞 Связаться", callback_data="contacts")]
-])
+main_kb = types.InlineKeyboardMarkup(row_width=1)
+main_kb.add(
+    types.InlineKeyboardButton(text="🚗 Каталог", callback_data="catalog:0"),
+    types.InlineKeyboardButton(text="🧮 Калькулятор", callback_data="calc_start"),
+    types.InlineKeyboardButton(text="📞 Связаться", callback_data="contacts")
+)
 
 cars = [
     {"brand": "BMW", "model": "X5", "year": 2019, "price": 35000,
@@ -24,48 +25,50 @@ cars = [
      "desc": "Бензин 2.0, полный привод, кожаный салон"},
 ]
 
-@dp.message(Command("start"))
-async def start(msg: Message):
+@dp.message_handler(commands=['start'])
+async def start(msg: types.Message):
     await msg.answer("🚙 Авто из Европы в Беларусь. Выберите действие:", reply_markup=main_kb)
 
-@dp.callback_query(F.data.startswith("catalog:"))
-async def catalog(call: CallbackQuery):
-    page = int(call.data.split(":")[1])
+@dp.callback_query_handler(lambda c: c.data.startswith('catalog:'))
+async def catalog(call: types.CallbackQuery):
+    page = int(call.data.split(':')[1])
     if page >= len(cars) or page < 0:
         await call.answer("Больше нет машин")
         return
     car = cars[page]
     text = f"{car['brand']} {car['model']} {car['year']} г.\n💰 {car['price']} €\n{car['desc']}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    nav = []
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    nav_buttons = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"catalog:{page-1}"))
+        nav_buttons.append(types.InlineKeyboardButton(text="⬅️", callback_data=f"catalog:{page-1}"))
     if page < len(cars)-1:
-        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"catalog:{page+1}"))
-    if nav:
-        kb.inline_keyboard.append(nav)
-    kb.inline_keyboard.append([InlineKeyboardButton(text="📝 Оставить заявку", callback_data="request_start")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")])
+        nav_buttons.append(types.InlineKeyboardButton(text="➡️", callback_data=f"catalog:{page+1}"))
+    if nav_buttons:
+        kb.row(*nav_buttons)
+    kb.add(types.InlineKeyboardButton(text="📝 Оставить заявку", callback_data="request_start"))
+    kb.add(types.InlineKeyboardButton(text="🏠 Главное меню", callback_data="main"))
     await call.message.edit_text(text, reply_markup=kb)
     await call.answer()
 
-@dp.callback_query(F.data == "main")
-async def back_to_main(call: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == 'main')
+async def back_to_main(call: types.CallbackQuery):
     await call.message.edit_text("🚙 Главное меню:", reply_markup=main_kb)
     await call.answer()
 
-@dp.callback_query(F.data == "calc_start")
-async def calc_start(call: CallbackQuery, state: FSMContext):
+@dp.callback_query_handler(lambda c: c.data == 'calc_start')
+async def calc_start(call: types.CallbackQuery):
     await call.message.answer(
         "Введите через пробел:\n"
         "цена_евро доставка объём_см³ топливо(petrol/diesel/electric) год\n"
         "Пример: 15000 800 2000 diesel 2020"
     )
-    await state.set_state("calc_input")
     await call.answer()
 
-@dp.message(state="calc_input")
-async def calc_result(msg: Message, state: FSMContext):
+class CalcForm(StatesGroup):
+    input = State()
+
+@dp.message_handler(state=CalcForm.input)
+async def calc_result(msg: types.Message, state: FSMContext):
     try:
         p = msg.text.split()
         price = float(p[0])
@@ -94,37 +97,37 @@ async def calc_result(msg: Message, state: FSMContext):
         )
     except:
         await msg.answer("❌ Ошибка. Пример: 15000 800 2000 diesel 2020")
-    await state.clear()
+    await state.finish()
+
+@dp.callback_query_handler(lambda c: c.data == 'request_start')
+async def req_start(call: types.CallbackQuery):
+    await call.message.answer("Введите ваше имя:")
+    await RequestForm.name.set()
+    await call.answer()
 
 class RequestForm(StatesGroup):
     name = State()
     phone = State()
     question = State()
 
-@dp.callback_query(F.data == "request_start")
-async def req_start(call: CallbackQuery, state: FSMContext):
-    await call.message.answer("Введите ваше имя:")
-    await state.set_state(RequestForm.name)
-    await call.answer()
-
-@dp.message(RequestForm.name)
-async def req_name(msg: Message, state: FSMContext):
+@dp.message_handler(state=RequestForm.name)
+async def req_name(msg: types.Message, state: FSMContext):
     await state.update_data(name=msg.text)
     await msg.answer("Ваш телефон:")
-    await state.set_state(RequestForm.phone)
+    await RequestForm.phone.set()
 
-@dp.message(RequestForm.phone)
-async def req_phone(msg: Message, state: FSMContext):
+@dp.message_handler(state=RequestForm.phone)
+async def req_phone(msg: types.Message, state: FSMContext):
     await state.update_data(phone=msg.text)
     await msg.answer("Комментарий (или /skip):")
-    await state.set_state(RequestForm.question)
+    await RequestForm.question.set()
 
-@dp.message(RequestForm.question, F.text == "/skip")
-async def req_skip(msg: Message, state: FSMContext):
+@dp.message_handler(commands=['skip'], state=RequestForm.question)
+async def req_skip(msg: types.Message, state: FSMContext):
     await finish_request(msg, state, "-")
 
-@dp.message(RequestForm.question)
-async def req_question(msg: Message, state: FSMContext):
+@dp.message_handler(state=RequestForm.question)
+async def req_question(msg: types.Message, state: FSMContext):
     await finish_request(msg, state, msg.text)
 
 async def finish_request(msg, state, question):
@@ -135,15 +138,12 @@ async def finish_request(msg, state, question):
         f"💬 {question}\nОт: @{msg.from_user.username}"
     )
     await msg.answer("✅ Спасибо! Менеджер свяжется с вами.")
-    await state.clear()
+    await state.finish()
 
-@dp.callback_query(F.data == "contacts")
-async def contacts(call: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == 'contacts')
+async def contacts(call: types.CallbackQuery):
     await call.message.edit_text("📲 Свяжитесь с менеджером: @your_username", reply_markup=main_kb)
     await call.answer()
 
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    executor.start_polling(dp, skip_updates=True)
