@@ -1,0 +1,149 @@
+import asyncio
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+BOT_TOKEN = "8915745168:AAEeM2e1SFvUC5ufxZrNVch3iBsWd6UybPw"
+MANAGER_ID = 8915745168:803329304
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+main_kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🚗 Каталог", callback_data="catalog:0")],
+    [InlineKeyboardButton(text="🧮 Калькулятор", callback_data="calc_start")],
+    [InlineKeyboardButton(text="📞 Связаться", callback_data="contacts")]
+])
+
+cars = [
+    {"brand": "BMW", "model": "X5", "year": 2019, "price": 35000,
+     "desc": "Дизель 3.0, пробег 80000 км, панорамная крыша"},
+    {"brand": "Audi", "model": "A6", "year": 2020, "price": 28000,
+     "desc": "Бензин 2.0, полный привод, кожаный салон"},
+]
+
+@dp.message(Command("start"))
+async def start(msg: Message):
+    await msg.answer("🚙 Авто из Европы в Беларусь. Выберите действие:", reply_markup=main_kb)
+
+@dp.callback_query(F.data.startswith("catalog:"))
+async def catalog(call: CallbackQuery):
+    page = int(call.data.split(":")[1])
+    if page >= len(cars) or page < 0:
+        await call.answer("Больше нет машин")
+        return
+    car = cars[page]
+    text = f"{car['brand']} {car['model']} {car['year']} г.\n💰 {car['price']} €\n{car['desc']}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"catalog:{page-1}"))
+    if page < len(cars)-1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"catalog:{page+1}"))
+    if nav:
+        kb.inline_keyboard.append(nav)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="📝 Оставить заявку", callback_data="request_start")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")])
+    await call.message.edit_text(text, reply_markup=kb)
+    await call.answer()
+
+@dp.callback_query(F.data == "main")
+async def back_to_main(call: CallbackQuery):
+    await call.message.edit_text("🚙 Главное меню:", reply_markup=main_kb)
+    await call.answer()
+
+@dp.callback_query(F.data == "calc_start")
+async def calc_start(call: CallbackQuery, state: FSMContext):
+    await call.message.answer(
+        "Введите через пробел:\n"
+        "цена_евро доставка объём_см³ топливо(petrol/diesel/electric) год\n"
+        "Пример: 15000 800 2000 diesel 2020"
+    )
+    await state.set_state("calc_input")
+    await call.answer()
+
+@dp.message(state="calc_input")
+async def calc_result(msg: Message, state: FSMContext):
+    try:
+        p = msg.text.split()
+        price = float(p[0])
+        delivery = float(p[1])
+        cc = float(p[2])
+        fuel = p[3].lower()
+        year = int(p[4])
+        age = 2026 - year
+        if age <= 3:
+            rate = 3.5
+        elif age <= 5:
+            rate = 5.0
+        else:
+            rate = 7.0
+        customs_val = price + delivery
+        duty = cc * rate
+        vat = (customs_val + duty) * 0.2
+        total_add = duty + vat + delivery
+        price_byn = (customs_val + duty + vat) * 3.4 + 150
+        await msg.answer(
+            f"📊 Таможенная стоимость: {customs_val:.0f} €\n"
+            f"Пошлина: {duty:.0f} €\n"
+            f"НДС: {vat:.0f} €\n"
+            f"Доп.расходы всего: {total_add:.0f} €\n"
+            f"Ориентировочно в BYN: {price_byn:.0f}"
+        )
+    except:
+        await msg.answer("❌ Ошибка. Пример: 15000 800 2000 diesel 2020")
+    await state.clear()
+
+class RequestForm(StatesGroup):
+    name = State()
+    phone = State()
+    question = State()
+
+@dp.callback_query(F.data == "request_start")
+async def req_start(call: CallbackQuery, state: FSMContext):
+    await call.message.answer("Введите ваше имя:")
+    await state.set_state(RequestForm.name)
+    await call.answer()
+
+@dp.message(RequestForm.name)
+async def req_name(msg: Message, state: FSMContext):
+    await state.update_data(name=msg.text)
+    await msg.answer("Ваш телефон:")
+    await state.set_state(RequestForm.phone)
+
+@dp.message(RequestForm.phone)
+async def req_phone(msg: Message, state: FSMContext):
+    await state.update_data(phone=msg.text)
+    await msg.answer("Комментарий (или /skip):")
+    await state.set_state(RequestForm.question)
+
+@dp.message(RequestForm.question, F.text == "/skip")
+async def req_skip(msg: Message, state: FSMContext):
+    await finish_request(msg, state, "-")
+
+@dp.message(RequestForm.question)
+async def req_question(msg: Message, state: FSMContext):
+    await finish_request(msg, state, msg.text)
+
+async def finish_request(msg, state, question):
+    data = await state.get_data()
+    await bot.send_message(
+        MANAGER_ID,
+        f"📩 Новая заявка!\n👤 {data['name']}\n📞 {data['phone']}\n"
+        f"💬 {question}\nОт: @{msg.from_user.username}"
+    )
+    await msg.answer("✅ Спасибо! Менеджер свяжется с вами.")
+    await state.clear()
+
+@dp.callback_query(F.data == "contacts")
+async def contacts(call: CallbackQuery):
+    await call.message.edit_text("📲 Свяжитесь с менеджером: @your_username", reply_markup=main_kb)
+    await call.answer()
+
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
