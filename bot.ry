@@ -1,23 +1,19 @@
-import asyncio
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.utils import executor
+import telebot
+from telebot import types
 
 BOT_TOKEN = "8915745168:AAEeM2e1SFvUC5ufxZrNVch3iBsWd6UybPw"
 MANAGER_ID = 803329304
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+bot = telebot.TeleBot(BOT_TOKEN)
 
-main_kb = types.InlineKeyboardMarkup(row_width=1)
-main_kb.add(
-    types.InlineKeyboardButton(text="🚗 Каталог", callback_data="catalog:0"),
-    types.InlineKeyboardButton(text="🧮 Калькулятор", callback_data="calc_start"),
-    types.InlineKeyboardButton(text="📞 Связаться", callback_data="contacts")
-)
+# Кнопки главного меню (клавиатура внизу)
+def main_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("🚗 Каталог", "🧮 Калькулятор")
+    markup.row("📞 Связаться")
+    return markup
 
+# Демо-машины
 cars = [
     {"brand": "BMW", "model": "X5", "year": 2019, "price": 35000,
      "desc": "Дизель 3.0, пробег 80000 км, панорамная крыша"},
@@ -25,125 +21,113 @@ cars = [
      "desc": "Бензин 2.0, полный привод, кожаный салон"},
 ]
 
-@dp.message_handler(commands=['start'])
-async def start(msg: types.Message):
-    await msg.answer("🚙 Авто из Европы в Беларусь. Выберите действие:", reply_markup=main_kb)
+user_state = {}  # для хранения состояний заявок и калькулятора
 
-@dp.callback_query_handler(lambda c: c.data.startswith('catalog:'))
-async def catalog(call: types.CallbackQuery):
-    page = int(call.data.split(':')[1])
-    if page >= len(cars) or page < 0:
-        await call.answer("Больше нет машин")
+# /start
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, "🚙 Авто из Европы в Беларусь. Выберите действие:", reply_markup=main_menu())
+
+# Обработка кнопок меню
+@bot.message_handler(func=lambda m: m.text == "🚗 Каталог")
+def show_catalog(message):
+    page = user_state.get(message.chat.id, {}).get('catalog_page', 0)
+    show_car(message.chat.id, page)
+
+def show_car(chat_id, page):
+    if page < 0 or page >= len(cars):
+        bot.send_message(chat_id, "Больше нет машин.")
         return
     car = cars[page]
     text = f"{car['brand']} {car['model']} {car['year']} г.\n💰 {car['price']} €\n{car['desc']}"
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    nav_buttons = []
+    markup = types.InlineKeyboardMarkup()
+    nav = []
     if page > 0:
-        nav_buttons.append(types.InlineKeyboardButton(text="⬅️", callback_data=f"catalog:{page-1}"))
+        nav.append(types.InlineKeyboardButton("⬅️", callback_data=f"page_{page-1}"))
     if page < len(cars)-1:
-        nav_buttons.append(types.InlineKeyboardButton(text="➡️", callback_data=f"catalog:{page+1}"))
-    if nav_buttons:
-        kb.row(*nav_buttons)
-    kb.add(types.InlineKeyboardButton(text="📝 Оставить заявку", callback_data="request_start"))
-    kb.add(types.InlineKeyboardButton(text="🏠 Главное меню", callback_data="main"))
-    await call.message.edit_text(text, reply_markup=kb)
-    await call.answer()
+        nav.append(types.InlineKeyboardButton("➡️", callback_data=f"page_{page+1}"))
+    if nav:
+        markup.row(*nav)
+    markup.add(types.InlineKeyboardButton("📝 Оставить заявку", callback_data="request_start"))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main"))
+    bot.send_message(chat_id, text, reply_markup=markup)
+    user_state[chat_id] = {'catalog_page': page}
 
-@dp.callback_query_handler(lambda c: c.data == 'main')
-async def back_to_main(call: types.CallbackQuery):
-    await call.message.edit_text("🚙 Главное меню:", reply_markup=main_kb)
-    await call.answer()
+@bot.callback_query_handler(func=lambda call: call.data.startswith("page_"))
+def nav_page(call):
+    page = int(call.data.split("_")[1])
+    show_car(call.message.chat.id, page)
+    bot.answer_callback_query(call.id)
 
-@dp.callback_query_handler(lambda c: c.data == 'calc_start')
-async def calc_start(call: types.CallbackQuery):
-    await call.message.answer(
-        "Введите через пробел:\n"
-        "цена_евро доставка объём_см³ топливо(petrol/diesel/electric) год\n"
-        "Пример: 15000 800 2000 diesel 2020"
-    )
-    await call.answer()
+@bot.callback_query_handler(func=lambda call: call.data == "main")
+def back_main(call):
+    bot.send_message(call.message.chat.id, "🚙 Главное меню:", reply_markup=main_menu())
+    bot.answer_callback_query(call.id)
 
-class CalcForm(StatesGroup):
-    input = State()
+# Калькулятор
+@bot.message_handler(func=lambda m: m.text == "🧮 Калькулятор")
+def calc_start(message):
+    msg = bot.send_message(message.chat.id, "Введите через пробел:\nцена_евро доставка объём_см³ топливо(petrol/diesel/electric) год\nПример: 15000 800 2000 diesel 2020")
+    bot.register_next_step_handler(msg, calc_result)
 
-@dp.message_handler(state=CalcForm.input)
-async def calc_result(msg: types.Message, state: FSMContext):
+def calc_result(message):
     try:
-        p = msg.text.split()
+        p = message.text.split()
         price = float(p[0])
         delivery = float(p[1])
         cc = float(p[2])
         fuel = p[3].lower()
         year = int(p[4])
         age = 2026 - year
-        if age <= 3:
-            rate = 3.5
-        elif age <= 5:
-            rate = 5.0
-        else:
-            rate = 7.0
+        if age <= 3: rate = 3.5
+        elif age <= 5: rate = 5.0
+        else: rate = 7.0
         customs_val = price + delivery
         duty = cc * rate
         vat = (customs_val + duty) * 0.2
         total_add = duty + vat + delivery
         price_byn = (customs_val + duty + vat) * 3.4 + 150
-        await msg.answer(
+        bot.send_message(message.chat.id,
             f"📊 Таможенная стоимость: {customs_val:.0f} €\n"
-            f"Пошлина: {duty:.0f} €\n"
-            f"НДС: {vat:.0f} €\n"
+            f"Пошлина: {duty:.0f} €\nНДС: {vat:.0f} €\n"
             f"Доп.расходы всего: {total_add:.0f} €\n"
-            f"Ориентировочно в BYN: {price_byn:.0f}"
-        )
+            f"Ориентировочно в BYN: {price_byn:.0f}")
     except:
-        await msg.answer("❌ Ошибка. Пример: 15000 800 2000 diesel 2020")
-    await state.finish()
+        bot.send_message(message.chat.id, "❌ Ошибка. Пример: 15000 800 2000 diesel 2020")
 
-@dp.callback_query_handler(lambda c: c.data == 'request_start')
-async def req_start(call: types.CallbackQuery):
-    await call.message.answer("Введите ваше имя:")
-    await RequestForm.name.set()
-    await call.answer()
+# Заявка
+@bot.callback_query_handler(func=lambda call: call.data == "request_start")
+def req_start(call):
+    msg = bot.send_message(call.message.chat.id, "Введите ваше имя:")
+    bot.register_next_step_handler(msg, req_name)
+    bot.answer_callback_query(call.id)
 
-class RequestForm(StatesGroup):
-    name = State()
-    phone = State()
-    question = State()
+def req_name(message):
+    user_state[message.chat.id] = {'name': message.text}
+    msg = bot.send_message(message.chat.id, "Ваш телефон:")
+    bot.register_next_step_handler(msg, req_phone)
 
-@dp.message_handler(state=RequestForm.name)
-async def req_name(msg: types.Message, state: FSMContext):
-    await state.update_data(name=msg.text)
-    await msg.answer("Ваш телефон:")
-    await RequestForm.phone.set()
+def req_phone(message):
+    user_state[message.chat.id]['phone'] = message.text
+    msg = bot.send_message(message.chat.id, "Комментарий (или /skip):")
+    bot.register_next_step_handler(msg, req_question)
 
-@dp.message_handler(state=RequestForm.phone)
-async def req_phone(msg: types.Message, state: FSMContext):
-    await state.update_data(phone=msg.text)
-    await msg.answer("Комментарий (или /skip):")
-    await RequestForm.question.set()
+def req_question(message):
+    if message.text == "/skip":
+        question = "-"
+    else:
+        question = message.text
+    data = user_state.pop(message.chat.id, {})
+    bot.send_message(MANAGER_ID,
+        f"📩 Новая заявка!\n👤 {data.get('name')}\n📞 {data.get('phone')}\n"
+        f"💬 {question}\nОт: @{message.from_user.username}")
+    bot.send_message(message.chat.id, "✅ Спасибо! Менеджер свяжется с вами.")
 
-@dp.message_handler(commands=['skip'], state=RequestForm.question)
-async def req_skip(msg: types.Message, state: FSMContext):
-    await finish_request(msg, state, "-")
+# Контакты
+@bot.message_handler(func=lambda m: m.text == "📞 Связаться")
+def contacts(message):
+    bot.send_message(message.chat.id, "📲 Свяжитесь с менеджером: @your_username")
 
-@dp.message_handler(state=RequestForm.question)
-async def req_question(msg: types.Message, state: FSMContext):
-    await finish_request(msg, state, msg.text)
-
-async def finish_request(msg, state, question):
-    data = await state.get_data()
-    await bot.send_message(
-        MANAGER_ID,
-        f"📩 Новая заявка!\n👤 {data['name']}\n📞 {data['phone']}\n"
-        f"💬 {question}\nОт: @{msg.from_user.username}"
-    )
-    await msg.answer("✅ Спасибо! Менеджер свяжется с вами.")
-    await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data == 'contacts')
-async def contacts(call: types.CallbackQuery):
-    await call.message.edit_text("📲 Свяжитесь с менеджером: @your_username", reply_markup=main_kb)
-    await call.answer()
-
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+# Запуск
+if __name__ == "__main__":
+    bot.polling(none_stop=True)
